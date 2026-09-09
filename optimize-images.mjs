@@ -1,13 +1,16 @@
-// 将 public 下的 PNG 转成同目录同名 .webp,并把最长边限制在 MAX_EDGE 内。
-// 用法: node optimize-images.mjs
-// 原 PNG 保留;main.jsx 的引用已指向 .webp。改图后重跑本脚本即可增量更新。
+// 将「素材原图PNG」中的原始 PNG 转成同路径同名的 .webp 输出到 public。
+// 为保作品集清晰度,保留原始分辨率(不降采样),质量 88。
+// 用法: cd web-pages && node optimize-images.mjs [--force]
+// 原 PNG 不删除;图片更新后重跑即可增量刷新。
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import sharp from "sharp";
 
-const PUBLIC_DIR = path.resolve("public");
-const MAX_EDGE = 1600; // 展示最长边上限(原图超过才缩放)
-const QUALITY = 82;
+const HERE = import.meta.dirname; // web-pages 目录
+const SRC_DIR = path.join(HERE, "..", "素材原图PNG"); // 原图(仓库外,本地备份)
+const OUT_DIR = path.join(HERE, "public"); // 输出到站点目录
+const QUALITY = 88; // 高质量,保留设计细节
+const FORCE = process.argv.includes("--force");
 
 async function* walk(dir) {
   for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
@@ -18,43 +21,41 @@ async function* walk(dir) {
 }
 
 async function main() {
-  let saved = 0;
   let before = 0;
   let after = 0;
   let count = 0;
-  for await (const png of walk(PUBLIC_DIR)) {
+  for await (const png of walk(SRC_DIR)) {
     if (!png.toLowerCase().endsWith(".png")) continue;
-    const webp = png.replace(/\.png$/i, ".webp");
-    const stat = await fs.stat(png);
-    let need = true;
-    try {
-      const wStat = await fs.stat(webp);
-      // 已存在且比源文件新 -> 跳过
-      if (wStat.mtimeMs >= stat.mtimeMs) need = false;
-    } catch {
-      /* webp 不存在,需要生成 */
+    const rel = path.relative(SRC_DIR, png);
+    const webp = path.join(OUT_DIR, rel.replace(/\.png$/i, ".webp"));
+    const srcStat = await fs.stat(png);
+    let need = FORCE;
+    if (!need) {
+      try {
+        const outStat = await fs.stat(webp);
+        need = outStat.mtimeMs < srcStat.mtimeMs;
+      } catch {
+        need = true;
+      }
     }
     if (!need) continue;
 
-    const out = await sharp(png, { failOn: "none" })
-      .resize({ width: MAX_EDGE, height: MAX_EDGE, fit: "inside", withoutEnlargement: true })
+    await fs.mkdir(path.dirname(webp), { recursive: true });
+    const info = await sharp(png, { failOn: "none" })
       .webp({ quality: QUALITY, effort: 4 })
       .toFile(webp);
-    const b = stat.size;
-    const a = out.size;
-    before += b;
-    after += a;
-    saved += b - a;
+    before += srcStat.size;
+    after += info.size;
     count += 1;
-    const rel = path.relative(PUBLIC_DIR, png);
-    console.log(`  ${((1 - a / b) * 100).toFixed(0).padStart(3)}%  ${(b / 1e6).toFixed(2)}M -> ${(a / 1e6).toFixed(2)}M  ${rel}`);
+    console.log(
+      `  ${((1 - info.size / srcStat.size) * 100).toFixed(0).padStart(3)}%  ` +
+        `${(srcStat.size / 1e6).toFixed(2)}M -> ${(info.size / 1e6).toFixed(2)}M  ` +
+        `${rel.replace(/\.png$/i, ".webp")}`,
+    );
   }
-  console.log(`\n转换 ${count} 张`);
-  if (count > 0) {
-    console.log(`累计 ${(before / 1e6).toFixed(0)}M -> ${(after / 1e6).toFixed(0)}M,省 ${(saved / 1e6).toFixed(0)}M (${(saved / Math.max(before, 1) * 100).toFixed(0)}%)`);
-  } else {
-    console.log("无需转换(webp 均已是最新)");
-  }
+  console.log(count ? `\n转换 ${count} 张` : "无需转换");
+  if (count > 0)
+    console.log(`累计 ${(before / 1e6).toFixed(0)}M -> ${(after / 1e6).toFixed(1)}M`);
 }
 
 main().catch((e) => {
